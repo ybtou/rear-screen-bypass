@@ -29,6 +29,8 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
     private static final boolean STAGE_RIGHT_FILE_BEFORE_APPLY = true;
     private static final boolean STAGE_MTZ_FILE_BEFORE_APPLY = true;
     private static final boolean ALLOW_DONOR_RIGHT_FILE_FALLBACK = true;
+    private static final boolean BYPASS_MISSING_RIGHT_FILE_COPY = true;
+    private static final boolean PREFILL_THEME_MANAGER_SNAPSHOT_PATHS = true;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -173,11 +175,12 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        if (!STAGE_RIGHT_FILE_BEFORE_APPLY) {
-                            return;
-                        }
                         Object bean = safeObjectField(param.thisObject, "$bean");
                         if (bean == null) {
+                            return;
+                        }
+                        ensureThemeManagerSnapshotPaths(bean);
+                        if (!STAGE_RIGHT_FILE_BEFORE_APPLY) {
                             return;
                         }
                         stageRightFileIfNeeded(bean, classLoader);
@@ -342,6 +345,30 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
         }
     }
 
+    private static void ensureThemeManagerSnapshotPaths(Object bean) {
+        if (!PREFILL_THEME_MANAGER_SNAPSHOT_PATHS) {
+            return;
+        }
+
+        String resLocalPath = safeCallString(bean, "getResLocalPath");
+        String resSnapshotPath = safeCallString(bean, "getResSnapshotPath");
+        if (isEmpty(resSnapshotPath) && fileExists(resLocalPath)) {
+            safeCallMethod(bean, "setResSnapshotPath", resLocalPath);
+            if (LOG_VERBOSE) {
+                log("ThemeManager bean resSnapshotPath filled from resLocalPath " + resLocalPath);
+            }
+        }
+
+        String metaPath = safeCallString(bean, "getMetaPath");
+        String metaSnapshotPath = safeCallString(bean, "getMetaSnapshotPath");
+        if (isEmpty(metaSnapshotPath) && fileExists(metaPath)) {
+            safeCallMethod(bean, "setMetaSnapshotPath", metaPath);
+            if (LOG_VERBOSE) {
+                log("ThemeManager bean metaSnapshotPath filled from metaPath " + metaPath);
+            }
+        }
+    }
+
     private static void stageRightFileIfNeeded(Object bean, ClassLoader classLoader) {
         String sourceRightPath = safeCallString(bean, "getRightPath");
         if (isEmpty(sourceRightPath) || !sourceRightPath.endsWith(".mra")) {
@@ -408,6 +435,14 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
                                 + " error=" + Log.getStackTraceString(e));
                     }
                 }
+            }
+            if (BYPASS_MISSING_RIGHT_FILE_COPY) {
+                safeCallMethod(bean, "setRightPath", destinationRightPath);
+                log("ThemeManager right-file copy bypassed: source missing "
+                        + sourceRightPath
+                        + ", using destination path "
+                        + destinationRightPath);
+                return;
             }
             log("ThemeManager right-file staging skipped: source missing " + sourceRightPath);
             return;
@@ -643,6 +678,10 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
 
     private static boolean isEmpty(String value) {
         return value == null || value.isEmpty();
+    }
+
+    private static boolean fileExists(String value) {
+        return !isEmpty(value) && new File(value).exists();
     }
 
     private static boolean isPrebuiltRearThemePath(String value) {
