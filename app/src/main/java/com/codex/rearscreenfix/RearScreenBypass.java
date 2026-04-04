@@ -33,6 +33,7 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
     private static final boolean ALLOW_DONOR_RIGHT_FILE_FALLBACK = true;
     private static final boolean BYPASS_MISSING_RIGHT_FILE_COPY = true;
     private static final boolean PREFILL_THEME_MANAGER_SNAPSHOT_PATHS = true;
+    private static final boolean REDIRECT_WHITE_RUNTIME_PATHS_FOR_LOOSE_AI = true;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -164,6 +165,38 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
                                     + " metaPath=" + safeCallString(bean, "getMetaPath")
                                     + " metaSnapshotPath=" + safeCallString(bean, "getMetaSnapshotPath")
                                     + " rightPath=" + safeCallString(bean, "getRightPath"));
+                        }
+                    }
+                }
+        ));
+
+        hookSafe(() -> XposedHelpers.findAndHookMethod(
+                "com.rearScreen.bean.RearScreenListItemBean",
+                classLoader,
+                "getRuntimeDirWithAuthWhite",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!REDIRECT_WHITE_RUNTIME_PATHS_FOR_LOOSE_AI) {
+                            return;
+                        }
+
+                        Object bean = param.thisObject;
+                        if (bean == null || !shouldUseStandardRuntimePath(bean)) {
+                            return;
+                        }
+
+                        String whitePath = param.getResult() instanceof String ? (String) param.getResult() : null;
+                        String authPath = safeCallString(bean, "getRuntimeDirWithAuth");
+                        if (isEmpty(authPath) || authPath.equals(whitePath)) {
+                            return;
+                        }
+
+                        param.setResult(authPath);
+                        if (LOG_VERBOSE) {
+                            log("ThemeManager white runtime path redirected to " + authPath
+                                    + " for resId=" + safeCallString(bean, "getResId")
+                                    + " source=" + safeCallString(bean, "getResLocalPath"));
                         }
                     }
                 }
@@ -525,9 +558,9 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
 
     private static void stageLooseMtzSourceIfNeeded(Object bean, File sourceFile) {
         String sourcePath = sourceFile.getAbsolutePath();
-        String destinationMtzPath = safeCallString(bean, "getRuntimeDirWithAuthWhite");
+        String destinationMtzPath = resolveRuntimeMtzPath(bean);
         if (isEmpty(destinationMtzPath)) {
-            log("ThemeManager loose mtz staging skipped: runtime white-auth path missing for " + sourcePath);
+            log("ThemeManager loose mtz staging skipped: runtime path missing for " + sourcePath);
             return;
         }
 
@@ -552,8 +585,40 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
         safeCallMethod(bean, "setResLocalPath", destinationMtzPath);
         safeCallMethod(bean, "setResSnapshotPath", destinationMtzPath);
         if (LOG_VERBOSE) {
-            log("ThemeManager bean mtz paths rewritten to white-auth path " + destinationMtzPath);
+            log("ThemeManager bean mtz paths rewritten to runtime path " + destinationMtzPath);
         }
+    }
+
+    private static String resolveRuntimeMtzPath(Object bean) {
+        String preferred = safeCallString(bean, "getRuntimeDirWithAuthWhite");
+        if (!isEmpty(preferred)) {
+            return preferred;
+        }
+        return safeCallString(bean, "getRuntimeDirWithAuth");
+    }
+
+    private static boolean shouldUseStandardRuntimePath(Object bean) {
+        String resSubType = safeCallString(bean, "getResSubType");
+        if ("ai".equals(resSubType)) {
+            return true;
+        }
+
+        String resLocalPath = safeCallString(bean, "getResLocalPath");
+        if (isEmpty(resLocalPath)) {
+            return false;
+        }
+        if (resLocalPath.contains("/.ai_wallpaper/")) {
+            return true;
+        }
+        if (resLocalPath.startsWith("/data/system/theme/rearScreen/")) {
+            return false;
+        }
+
+        File sourceFile = new File(resLocalPath);
+        if (sourceFile.isDirectory()) {
+            return true;
+        }
+        return !resLocalPath.endsWith(".mrc");
     }
 
     private static String bundleGet(Bundle bundle, String key) {
