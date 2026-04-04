@@ -39,6 +39,7 @@ Debug APK path after local build:
 If it does not work, send issues with log files.
 
 ` adb logcat -c`
+
 ` adb logcat -v time > log.txt`
 
 ## Build
