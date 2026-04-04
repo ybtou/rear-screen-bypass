@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -474,9 +476,21 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
         }
 
         String sourceMtzPath = safeCallString(bean, "getResLocalPath");
-        if (isEmpty(sourceMtzPath) || !sourceMtzPath.endsWith(".mrc")) {
+        if (isEmpty(sourceMtzPath)) {
             return;
         }
+
+        File sourceFile = new File(sourceMtzPath);
+        if (!sourceFile.exists()) {
+            log("ThemeManager mtz staging skipped: source missing " + sourceMtzPath);
+            return;
+        }
+
+        if (sourceFile.isDirectory() || !sourceMtzPath.endsWith(".mrc")) {
+            stageLooseMtzSourceIfNeeded(bean, sourceFile);
+            return;
+        }
+
         if (!isPrebuiltRearThemePath(sourceMtzPath)) {
             return;
         }
@@ -484,12 +498,6 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
         String destinationMtzPath = safeCallString(bean, "getRuntimeDirWithAuth");
         if (isEmpty(destinationMtzPath)) {
             log("ThemeManager mtz staging skipped: runtime auth path missing for " + sourceMtzPath);
-            return;
-        }
-
-        File sourceFile = new File(sourceMtzPath);
-        if (!sourceFile.exists()) {
-            log("ThemeManager mtz staging skipped: source missing " + sourceMtzPath);
             return;
         }
 
@@ -512,6 +520,39 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
         safeCallMethod(bean, "setResSnapshotPath", destinationMtzPath);
         if (LOG_VERBOSE) {
             log("ThemeManager bean mtz paths rewritten to " + destinationMtzPath);
+        }
+    }
+
+    private static void stageLooseMtzSourceIfNeeded(Object bean, File sourceFile) {
+        String sourcePath = sourceFile.getAbsolutePath();
+        String destinationMtzPath = safeCallString(bean, "getRuntimeDirWithAuthWhite");
+        if (isEmpty(destinationMtzPath)) {
+            log("ThemeManager loose mtz staging skipped: runtime white-auth path missing for " + sourcePath);
+            return;
+        }
+
+        File destinationFile = new File(destinationMtzPath);
+        try {
+            if (sourceFile.isDirectory()) {
+                zipDirectoryContents(sourceFile, destinationFile);
+                log("ThemeManager packaged directory mtz source " + sourcePath + " -> " + destinationMtzPath);
+            } else {
+                copyFile(sourceFile, destinationFile);
+                log("ThemeManager staged loose mtz source " + sourcePath + " -> " + destinationMtzPath);
+            }
+            destinationFile.setReadable(true, false);
+            destinationFile.setWritable(true, false);
+            destinationFile.setExecutable(true, false);
+        } catch (IOException e) {
+            log("ThemeManager loose mtz staging failed " + sourcePath + " -> " + destinationMtzPath
+                    + " error=" + Log.getStackTraceString(e));
+            return;
+        }
+
+        safeCallMethod(bean, "setResLocalPath", destinationMtzPath);
+        safeCallMethod(bean, "setResSnapshotPath", destinationMtzPath);
+        if (LOG_VERBOSE) {
+            log("ThemeManager bean mtz paths rewritten to white-auth path " + destinationMtzPath);
         }
     }
 
@@ -619,6 +660,60 @@ public final class RearScreenBypass implements IXposedHookLoadPackage {
             }
             output.getFD().sync();
         }
+    }
+
+    private static void zipDirectoryContents(File sourceDir, File destination) throws IOException {
+        File parent = destination.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs() && !parent.exists()) {
+            throw new IOException("Failed to create directory " + parent);
+        }
+
+        try (ZipOutputStream output = new ZipOutputStream(new FileOutputStream(destination))) {
+            addDirectoryToZip(sourceDir, sourceDir, output);
+            output.finish();
+        }
+    }
+
+    private static void addDirectoryToZip(File rootDir, File current, ZipOutputStream output) throws IOException {
+        File[] children = current.listFiles();
+        if (children == null) {
+            return;
+        }
+
+        if (children.length == 0 && !rootDir.equals(current)) {
+            ZipEntry entry = new ZipEntry(toZipEntryName(rootDir, current) + "/");
+            output.putNextEntry(entry);
+            output.closeEntry();
+            return;
+        }
+
+        for (File child : children) {
+            if (child.isDirectory()) {
+                addDirectoryToZip(rootDir, child, output);
+                continue;
+            }
+
+            ZipEntry entry = new ZipEntry(toZipEntryName(rootDir, child));
+            output.putNextEntry(entry);
+            try (FileInputStream input = new FileInputStream(child)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, read);
+                }
+            }
+            output.closeEntry();
+        }
+    }
+
+    private static String toZipEntryName(File rootDir, File file) {
+        String rootPath = rootDir.getAbsolutePath();
+        String filePath = file.getAbsolutePath();
+        String relativePath = filePath.substring(rootPath.length());
+        if (relativePath.startsWith(File.separator)) {
+            relativePath = relativePath.substring(1);
+        }
+        return relativePath.replace(File.separatorChar, '/');
     }
 
     private static File findLatestRightFile(String rightsBaseDir, String excludePath) {
