@@ -742,7 +742,7 @@ private static void forceOldValidatorIfNeeded(
         return;
     }
 
-    Object predicateType =
+    int predicateType =
             safeIntField(param.thisObject, "a");
 
     if (predicateType != 3) {
